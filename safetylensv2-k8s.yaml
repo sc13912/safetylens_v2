@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safetylens-v2
+  namespace: default
+  labels:
+    app: safetylens-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: safetylens-v2
+  template:
+    metadata:
+      labels:
+        app: safetylens-v2
+    spec:
+      containers:
+      - name: safetylens-v2
+        image: ### build & replace with your own image repo  
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        env:
+        - name: VLLM_URL
+          # value: "http://qwen3vl-30b-awq:8000/v1"
+          value: "http://qwen3vl-30b-nvfp4:8000/v1"  
+        - name: MODEL_NAME
+          # value: "Qwen3-VL-30B-A3B-Instruct-AWQ"
+          value: "Qwen3-VL-30B-A3B-Instruct-NVFP4"
+        - name: FRAME_INTERVAL
+          value: "2.0"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2"
+            memory: "2Gi"
+        volumeMounts:
+        - name: video-storage
+          mountPath: /tmp
+      volumes:
+      - name: video-storage
+        hostPath:
+          path: /tmp/safetylens-v2
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: safetylens-v2
+  namespace: default
+  labels:
+    app: safetylens-v2
+spec:
+  type: LoadBalancer
+  loadBalancerClass: io.cilium/bgp-control-plane
+  selector:
+    app: safetylens-v2
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
