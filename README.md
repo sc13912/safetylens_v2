@@ -23,7 +23,7 @@ A VLM-based AI agent that continuously monitors warehouse video feeds and static
 
 ![SafetyLens v2 Architecture](safetylensv2_architecture.png)
 
-![SafetyLens v2 Demo](safetylensv2_demo.gif)
+
 
 ## Prerequisites
 
