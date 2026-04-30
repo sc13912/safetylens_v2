@@ -65,8 +65,8 @@ kubectl apply -f safetylensv2-k8s.yaml
 ```
 
 The app container image is available at:
-- **Docker Hub**: `schen13912/safetylens_v2:latest`
-- **Docker Hub**: `schen13912/spark-vllm:latest`
+- **Docker Hub**: [schen13912/safetylens_v2:latest](https://hub.docker.com/r/schen13912/safetylens_v2)
+- **Docker Hub**: [schen13912/spark-vllm:latest](https://hub.docker.com/r/schen13912/spark-vllm)
 
 ### 3. Access the app
 
