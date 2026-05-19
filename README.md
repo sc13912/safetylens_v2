@@ -5,7 +5,7 @@
 A VLM-based AI agent that continuously monitors warehouse video feeds and static camera images for safety hazards, providing real-time scoring, hazard detection, alerting, and natural language querying.
 
 
-# 🧠 May 2026 Update — Amazon Bedrock AgentCore Integration with Observability
+# 🧠 May 2026 Update — Amazon Bedrock AgentCore Integration with Langfuse Observability
 
 SafetyLens v2 now integrates with **Amazon Bedrock AgentCore** for intelligent incident memory, conversational safety insights, and full-stack observability via **Langfuse**.
 
