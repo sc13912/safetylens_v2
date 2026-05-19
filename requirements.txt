@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+httpx
+python-multipart
+opencv-python-headless
+Pillow
+numpy
+websockets
+langfuse
+boto3

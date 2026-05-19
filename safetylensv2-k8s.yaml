@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: safetylens-v2-sa
+  namespace: default
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/safetylens-v2-irsa-role
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safetylens-v2
+  namespace: default
+  labels:
+    app: safetylens-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: safetylens-v2
+  template:
+    metadata:
+      labels:
+        app: safetylens-v2
+    spec:
+      serviceAccountName: safetylens-v2-sa
+      containers:
+      - name: safetylens-v2
+        image: <account-id>.dkr.ecr.ap-southeast-2.amazonaws.com/safetylens_v2:agentcore
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        env:
+        - name: VLLM_URL
+          value: "http://qwen3vl-30b-nvfp4:8000/v1"
+        - name: MODEL_NAME
+          value: "Qwen3-VL-30B-A3B-Instruct-NVFP4"
+        - name: FRAME_INTERVAL
+          value: "2.0"
+        - name: LANGFUSE_SECRET_KEY
+          value: "LANGFUSE_SECRET_KEY"
+        - name: LANGFUSE_PUBLIC_KEY
+          value: "LANGFUSE_PUBLIC_KEY"
+        - name: LANGFUSE_BASE_URL
+          value: "https://us.cloud.langfuse.com"
+        - name: MEMORY_ID
+          value: "SafetyLens_Memory-xxxxxxxx"
+        - name: AWS_DEFAULT_REGION
+          value: "ap-southeast-2"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2"
+            memory: "2Gi"
+        volumeMounts:
+        - name: video-storage
+          mountPath: /tmp
+      volumes:
+      - name: video-storage
+        hostPath:
+          path: /tmp/safetylens-v2
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: safetylens-v2
+  namespace: default
+  labels:
+    app: safetylens-v2
+spec:
+  type: LoadBalancer
+  loadBalancerClass: io.cilium/bgp-control-plane
+  selector:
+    app: safetylens-v2
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP

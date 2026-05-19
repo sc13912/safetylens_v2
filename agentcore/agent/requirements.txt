@@ -1,0 +1,3 @@
+bedrock-agentcore
+strands-agents
+opentelemetry-exporter-otlp-proto-http

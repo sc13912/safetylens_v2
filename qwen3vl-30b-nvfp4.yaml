@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen3vl-30b-nvfp4
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: qwen3vl-30b-nvfp4
+  template:
+    metadata:
+      labels:
+        app: qwen3vl-30b-nvfp4
+    spec:
+      nodeSelector:
+        eks.amazonaws.com/compute-type: hybrid
+      hostIPC: true
+      containers:
+      - name: vllm
+        image: vllm-node-tf5:latest
+        imagePullPolicy: Never
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          exec vllm serve ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4 \
+            --served-model-name Qwen3-VL-30B-A3B-Instruct-NVFP4 \
+            --host 0.0.0.0 \
+            --port 8000 \
+            --max-model-len 131072 \
+            --max-num-seqs 128 \
+            --gpu-memory-utilization 0.8 \
+            --load-format auto \
+            --enable-prefix-caching \
+            --trust-remote-code \
+            --enable-auto-tool-choice \
+            --tool-call-parser hermes \
+            --attention-backend flashinfer \
+            --kv-cache-dtype fp8 \
+            --mm-encoder-tp-mode data \
+            --mm-processor-cache-type shm
+        env:
+        - name: VLLM_TEST_FORCE_FP8_MARLIN
+          value: "1"
+        - name: VLLM_NVFP4_GEMM_BACKEND
+          value: "marlin"
+        - name: VLLM_USE_FLASHINFER_MOE_FP4
+          value: "0"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - name: hf-cache
+          mountPath: /root/.cache/huggingface
+        - name: dshm
+          mountPath: /dev/shm
+        securityContext:
+          privileged: true
+      volumes:
+      - name: hf-cache
+        hostPath:
+          path: /root/.cache/huggingface
+          type: DirectoryOrCreate
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3vl-30b-nvfp4
+spec:
+  selector:
+    app: qwen3vl-30b-nvfp4
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP
