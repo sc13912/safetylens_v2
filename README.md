@@ -22,7 +22,7 @@ SafetyLens v2 now integrates with **Amazon Bedrock AgentCore** for intelligent i
 ## Hybrid AI Architecture (with AgentCore Integration)
 
 
-![Hybrid AI Architecture](HybridAI_EKSHybrid_AgentCore_architecture.png)
+![Hybrid AI Architecture](EKS-Hybrid_AgentCore_architecture.png)
 
 
 ## Additional Prerequisites (AgentCore)
