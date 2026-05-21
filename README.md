@@ -19,30 +19,10 @@ SafetyLens v2 now integrates with **Amazon Bedrock AgentCore** for intelligent i
 - **Private Web Portal** — Lambda-based chat UI accessible via Private API Gateway (VPN-only) for warehouse managers to query incident history
 - **IRSA Authentication** — Pod-level IAM via EKS Service Account for secure AWS API access without static credentials
 
-## Architecture (AgentCore Integration)
+## Hybrid AI Architecture (with AgentCore Integration)
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  EKS Hybrid Node (DGX Spark)                                         │
-│                                                                     │
-│  SafetyLens v2 ──► vLLM (Qwen3-VL-30B)                              │
-│       │                                                             │
-│       ├──► AgentCore Memory (create_event, auto-summarized)          │
-│       └──► Langfuse Cloud (safety-score + error traces)              │
-└─────────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  AWS (ap-southeast-2)                                                │
-│                                                                     │
-│  AgentCore Runtime (Strands Agent + Claude Haiku 4.5)                │
-│       │                                                             │
-│       ├──► AgentCore Memory (semantic search over summaries)         │
-│       └──► Langfuse Cloud (OTEL agent traces)                        │
-│                                                                     │
-│  Private API Gateway → Lambda (Chat Portal for Warehouse Managers)   │
-│       └──► AgentCore Runtime (via VPC PrivateLink)                   │
-└─────────────────────────────────────────────────────────────────────┘
+![Hybrid AI Architecture](HybridAI_EKSHybrid_AgentCore_architecture.png)
 ```
 
 ## Additional Prerequisites (AgentCore)
