@@ -32,11 +32,11 @@ spec:
         - containerPort: 8080
         env:
         - name: VLLM_URL
-          value: "http://qwen3vl-30b-nvfp4:8000/v1"
+          value: "http://qwen36-35b-nvfp4:8000/v1"
         - name: MODEL_NAME
-          value: "Qwen3-VL-30B-A3B-Instruct-NVFP4"
+          value: "Qwen3.6-35B-A3B-NVFP4"
         - name: FRAME_INTERVAL
-          value: "2.0"
+          value: "1.0"
         - name: LANGFUSE_SECRET_KEY
           value: "LANGFUSE_SECRET_KEY"
         - name: LANGFUSE_PUBLIC_KEY

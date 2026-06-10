@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen36-35b-nvfp4
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: qwen36-35b-nvfp4
+  template:
+    metadata:
+      labels:
+        app: qwen36-35b-nvfp4
+    spec:
+      nodeSelector:
+        eks.amazonaws.com/compute-type: hybrid
+      hostIPC: true
+      containers:
+      - name: vllm
+        # Same image bytes were also pushed to ECR:
+        # <account-id>.dkr.ecr.ap-southeast-2.amazonaws.com/spark-vllm:qwen36-35b-nvfp4
+        # Using the local tag with Never so the hybrid node runs it without ECR pull creds.
+        image: vllm-node-tf5-20260605
+        imagePullPolicy: Never
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          exec vllm serve nvidia/Qwen3.6-35B-A3B-NVFP4 \
+            --served-model-name Qwen3.6-35B-A3B-NVFP4 \
+            --host 0.0.0.0 \
+            --port 8000 \
+            --tensor-parallel-size 1 \
+            --trust-remote-code \
+            --chat-template /root/.cache/huggingface/qwen36_nothink_chat_template.jinja \
+            --dtype auto \
+            --quantization modelopt \
+            --kv-cache-dtype fp8 \
+            --attention-backend flashinfer \
+            --moe-backend marlin \
+            --gpu-memory-utilization 0.70 \
+            --max-model-len 65536 \
+            --max-num-seqs 2 \
+            --max-num-batched-tokens 8192 \
+            --enable-chunked-prefill \
+            --async-scheduling \
+            --enable-prefix-caching \
+            --enable-auto-tool-choice \
+            --tool-call-parser qwen3_xml \
+            --mm-processor-cache-type shm \
+            --speculative-config '{"method":"mtp","num_speculative_tokens":3,"moe_backend":"triton"}'
+        env:
+        # --- NVIDIA official DGX Spark NVFP4 backend recipe ---
+        - name: VLLM_USE_FLASHINFER_MOE_FP4
+          value: "0"
+        - name: VLLM_FP8_MOE_BACKEND
+          value: "flashinfer_cutlass"
+        - name: FLASHINFER_DISABLE_VERSION_CHECK
+          value: "1"
+        - name: CUTE_DSL_ARCH
+          value: "sm_121a"
+        - name: VLLM_MARLIN_USE_ATOMIC_ADD
+          value: "1"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+        # Model is already on-disk in the mounted HF cache; don't hit the network.
+        - name: HF_HUB_OFFLINE
+          value: "1"
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - name: hf-cache
+          mountPath: /root/.cache/huggingface
+        - name: dshm
+          mountPath: /dev/shm
+        securityContext:
+          privileged: true
+      volumes:
+      - name: hf-cache
+        hostPath:
+          # Standard convention: all models cached on Spark NVMe at /root/.cache/huggingface
+          path: /root/.cache/huggingface
+          type: DirectoryOrCreate
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen36-35b-nvfp4
+spec:
+  selector:
+    app: qwen36-35b-nvfp4
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP
