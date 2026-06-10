@@ -89,7 +89,7 @@ AgentCore Memory uses a **Summary Memory Strategy** that automatically consolida
 This means the agent gets pre-digested, accurate aggregate data rather than searching through thousands of individual raw records.
 
 ```bash
-cd safetylens_agentcore/
+cd agentcore/
 source .venv/bin/activate
 python3 setup_memory.py
 # Output: Memory ID = SafetyLens_Memory-XXXXXXXXXX
@@ -152,7 +152,7 @@ The updated `safetylensv2-agentcore-k8s.yaml` includes:
 ### 4. Deploy the Safety Insights Agent
 
 ```bash
-cd safetylens_agentcore/agent/
+cd agentcore/agent/
 
 agentcore configure -e agent.py -n safetylens_insights -rf requirements.txt \
   -r ap-southeast-2 -dt direct_code_deploy -rt PYTHON_3_12 -do -ni
@@ -196,7 +196,7 @@ aws ec2 create-vpc-endpoint \
   --private-dns-enabled
 
 # Deploy Lambda (in private subnets)
-cd safetylens_agentcore/lambda/
+cd agentcore/lambda/
 zip -j function.zip lambda_function.py
 
 aws lambda create-function \
@@ -292,6 +292,14 @@ kubectl apply -f qwen36-35b-nvfp4.yaml
 
 This deploys vLLM serving the Qwen3.6-35B-A3B-NVFP4 model with **Marlin** NVFP4 MoE backend + **FlashInfer** + **MTP speculative decoding**. The model is loaded from the HuggingFace cache hostPath on the Spark's NVMe (the deployment runs with `HF_HUB_OFFLINE=1`, so pre-cache the model there first).
 
+**One-time prep on the Spark** — the pod runs with `HF_HUB_OFFLINE=1`, so cache the model first. Run as `root` (or set `HF_HOME=/root/.cache/huggingface`) so it lands under the mounted cache:
+
+```bash
+huggingface-cli download nvidia/Qwen3.6-35B-A3B-NVFP4   # downloads to /root/.cache/huggingface/hub/
+```
+
+(The custom chat template goes in the same cache — see the chat-template step below.)
+
 Key environment variables for NVFP4 + Marlin:
 ```yaml
 env:
@@ -307,6 +315,38 @@ env:
   value: "1"
 - name: PYTORCH_CUDA_ALLOC_CONF
   value: "expandable_segments:True"
+```
+
+#### Environment variables (NVFP4 / GB10 recipe)
+
+| Variable | Purpose |
+|---|---|
+| `VLLM_USE_FLASHINFER_MOE_FP4=0` | Disable FlashInfer's NVFP4 MoE kernels; use the **Marlin** MoE backend instead (GB10's stable/fast path). |
+| `VLLM_FP8_MOE_BACKEND=flashinfer_cutlass` | Route FP8 MoE GEMMs through FlashInfer's CUTLASS kernels. |
+| `FLASHINFER_DISABLE_VERSION_CHECK=1` | Skip FlashInfer's version assertion (the Spark runs nightly/custom builds). |
+| `CUTE_DSL_ARCH=sm_121a` | Target **SM 12.1a** (GB10) for CUTLASS/CuTe kernel codegen. |
+| `VLLM_MARLIN_USE_ATOMIC_ADD=1` | Use atomic-add accumulation in Marlin GEMMs (correctness/perf on GB10). |
+| `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | Reduce allocator fragmentation in the shared 128 GB unified memory. |
+
+> **Recipe reference:** NVIDIA Developer Forums — [NVFP4 Performance Update](https://forums.developer.nvidia.com/t/nvfp4-performance-update/367781) (DGX Spark / GB10 NVFP4 backend guidance). The serving image is built from [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker).
+
+#### Instruct-mode (no-think) chat template
+
+The deployment serves the model in **instruct mode** (no reasoning preamble) via a custom chat template (`--chat-template /root/.cache/huggingface/qwen36_nothink_chat_template.jinja`).
+
+It is derived from the model's own template shipped on Hugging Face — [`chat_template.jinja`](https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4/blob/main/chat_template.jinja) in [`nvidia/Qwen3.6-35B-A3B-NVFP4`](https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4) — with a **single one-line change** that inverts the thinking default:
+
+```diff
+- {%- if enable_thinking is defined and enable_thinking is false %}
++ {%- if not (enable_thinking is defined and enable_thinking is true) %}
+```
+
+**What it does:** by default the server now injects an empty `<think></think>` block, so every response is clean JSON with no reasoning preamble — faster and deterministic for the scoring pipeline. Reasoning is still available on demand by passing `enable_thinking: true` (via `chat_template_kwargs`) on a request.
+
+**How to use:** [`qwen36_nothink_chat_template.jinja`](qwen36_nothink_chat_template.jinja) is included in this repo. Copy it into the Spark's HuggingFace cache (the path that is mounted into the pod) before deploying:
+
+```bash
+cp qwen36_nothink_chat_template.jinja /root/.cache/huggingface/qwen36_nothink_chat_template.jinja
 ```
 
 ### 2. Deploy SafetyLens v2

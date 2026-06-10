@@ -19,11 +19,14 @@ spec:
       hostIPC: true
       containers:
       - name: vllm
-        # Same image bytes were also pushed to ECR:
-        # <account-id>.dkr.ecr.ap-southeast-2.amazonaws.com/spark-vllm:qwen36-35b-nvfp4
-        # Using the local tag with Never so the hybrid node runs it without ECR pull creds.
-        image: vllm-node-tf5-20260605
-        imagePullPolicy: Never
+        # Public image (default) — pulled from Docker Hub.
+        image: schen13912/spark-vllm:qwen36-35b-nvfp4
+        imagePullPolicy: IfNotPresent
+        # Alternative — private ECR copy (same image bytes):
+        #   image: <account-id>.dkr.ecr.ap-southeast-2.amazonaws.com/spark-vllm:qwen36-35b-nvfp4
+        # Alternative — local containerd image built via eugr/spark-vllm-docker
+        # (docker save ... | sudo ctr -n k8s.io images import -), with imagePullPolicy: Never:
+        #   image: vllm-node-tf5-20260605
         command: ["/bin/bash", "-c"]
         args:
         - |

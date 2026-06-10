@@ -26,8 +26,11 @@ spec:
       serviceAccountName: safetylens-v2-sa
       containers:
       - name: safetylens-v2
-        image: <account-id>.dkr.ecr.ap-southeast-2.amazonaws.com/safetylens_v2:agentcore
-        imagePullPolicy: Always
+        # Public image (default) — pulled from Docker Hub.
+        image: schen13912/safetylens_v2:latest
+        imagePullPolicy: IfNotPresent
+        # Alternative — private ECR copy:
+        #   image: <account-id>.dkr.ecr.ap-southeast-2.amazonaws.com/safetylens_v2:agentcore
         ports:
         - containerPort: 8080
         env:
