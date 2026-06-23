@@ -59,22 +59,23 @@ FRAME_INTERVAL = float(os.getenv("FRAME_INTERVAL", "2.0"))
 # --- END DETAILED PROMPT ---
 
 SAFETY_PROMPT = """Analyze this warehouse/factory image for safety hazards.
-Return ONLY valid JSON:
-{"score":<int 0-100>,"deductions":[{"type":"<hazard>","points":<negative int>,"detail":"<brief>"}],"summary":"<one sentence>"}
-Scoring deductions (each category max once):
-PPE violation:-10, Blocked Exit/Fire Hazard:-30, Stacking/Load Safety:-25, Trip Hazard:-20, Forklift Hazard:-15, Spill/Chemical Hazard:-35
-Only report clearly visible hazards. Return score 100 with empty deductions if safe."""
+Return ONLY compact single-line JSON (no extra whitespace or newlines):
+{"deductions":[{"type":"<exact category name>"}],"summary":"<max 12 words>"}
+Categories (use these EXACT names, each at most once):
+PPE violation, Forklift Hazard, Trip Hazard, Stacking/Load Safety, Blocked Fire/Emergency Exit, Spill/Chemical Hazard, Fire/Electrical Hazard
+Only report clearly visible hazards. Use an empty deductions list if safe."""
 
 # ── State ──────────────────────────────────────────────────────────────────────
 state = {
     "cap": None, "running": False, "loop_video": True,
     "current_frame_b64": None, "last_analysis": None,
     "alert_prompt": None, "alert_threshold": 40, "alert_active": False, "webhook_url": None,
-    "vlm_busy": False,
+    "vlm_busy": False, "frame_seq": 0,
 }
 state_lock = Lock()
 ws_clients: list[WebSocket] = []
 broadcast_queue: queue.Queue = queue.Queue()
+memory_queue: queue.Queue = queue.Queue()
 cameras = {}  # {camera_id: {"b64": str, "mime": str, "analysis": dict}}
 
 
@@ -84,9 +85,9 @@ def encode_frame(frame: np.ndarray) -> str | None:
     if h < 28 or w < 28:
         return None
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    img = Image.fromarray(img).resize((336, 336))
+    img = Image.fromarray(img)  # native resolution: send the frame untouched (no resize)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
+    img.save(buf, format="JPEG", quality=90)
     return base64.b64encode(buf.getvalue()).decode()
 
 
@@ -106,12 +107,84 @@ def call_vlm_sync(prompt: str, b64: str) -> str:
         return f"VLM error: {e}"
 
 
+# ── Deterministic, model-independent safety scoring ─────────────────────────────
+# The VLM reliably IDENTIFIES + LABELS hazards, but its self-reported score/points
+# drift between models and it can't do the arithmetic in no-think mode. So we IGNORE
+# the model's numbers and score from the detected hazard TYPES using a fixed rubric,
+# each category counted at most once, PLUS severity banding:
+#   base = max(0, 100 - sum(category points))
+#   MAJOR hazard present (Spill/Chemical or Fire/Electrical) -> DANGER (cap <= 35)
+#   moderate-only hazards                                    -> floor at 60 (never DANGER)
+# NOTE: "Blocked Fire/Emergency Exit" is moderate (-25) and is matched BEFORE
+# "Fire/Electrical Hazard" so a blocked fire exit is NOT treated as an active fire.
+HAZARD_RUBRIC = [
+    # (canonical label, points, keywords, is_major)
+    ("Spill/Chemical Hazard", -50, ("spill", "chemical"), True),
+    ("Blocked Fire/Emergency Exit", -35, ("blocked", "emergency", "exit", "egress"), False),
+    ("Fire/Electrical Hazard", -65, ("fire", "electrical", "flammable", "wiring", "spark", "combustible"), True),
+    ("Stacking/Load Safety", -25, ("stack", "load", "unstable"), False),
+    ("Trip Hazard", -20, ("trip",), False),
+    ("Forklift Hazard", -15, ("forklift",), False),
+    ("PPE violation", -10, ("ppe", "hard hat", "hardhat", "helmet", "vest", "goggle", "glove"), False),
+]
+DANGER_CAP = 35          # any MAJOR hazard -> score forced to DANGER band (<40)
+MODERATE_FLOOR = 60      # moderate-only hazards never fall below WARNING
+
+
+def _categorize_hazard(hazard_type: str):
+    t = (hazard_type or "").lower()
+    for label, pts, kws, major in HAZARD_RUBRIC:
+        if any(k in t for k in kws):
+            return label, pts, major
+    return None, None, None
+
+
+def compute_safety_score(deductions):
+    """Recompute score from detected hazard types (each category once) + severity banding."""
+    seen = {}
+    if isinstance(deductions, dict):
+        deductions = [deductions]
+    if not isinstance(deductions, list):
+        deductions = []
+    for d in deductions:
+        if isinstance(d, str):
+            type_str, detail, mp = d, "", 0
+        elif isinstance(d, dict):
+            type_str, detail = d.get("type", ""), d.get("detail", "")
+            try:
+                mp = int(d.get("points", 0) or 0)
+            except Exception:
+                mp = 0
+        else:
+            continue
+        label, pts, major = _categorize_hazard(type_str)
+        if label is None:
+            label, pts, major = (type_str or "Other Hazard"), -abs(mp), False
+        if label not in seen:
+            seen[label] = {"type": label, "points": pts, "detail": detail, "_major": major}
+    norm = list(seen.values())
+    base = max(0, 100 + sum(x["points"] for x in norm))
+    has_major = any(x["_major"] for x in norm)
+    if has_major:
+        score = min(base, DANGER_CAP)   # C: additive, majors forced into DANGER (ceiling)
+    else:
+        score = base                    # pure additive
+    for x in norm:
+        x.pop("_major", None)
+    return max(0, min(100, score)), norm
+
+
 def parse_safety_json(raw: str) -> dict:
     raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
     except Exception:
         return {"score": -1, "deductions": [], "summary": raw[:200]}
+    score, norm = compute_safety_score(data.get("deductions"))
+    data["deductions"] = norm
+    data["score"] = score
+    data.setdefault("summary", "")
+    return data
 
 
 async def query_cameras(question: str) -> str:
@@ -168,7 +241,7 @@ def frame_loop():
         frame_b64 = base64.b64encode(jpg.tobytes()).decode()
         with state_lock:
             state["current_frame_b64"] = frame_b64
-        broadcast_queue.put({"type": "frame", "b64": frame_b64})
+            state["frame_seq"] += 1
         now = time.time()
         with state_lock:
             busy = state["vlm_busy"]
@@ -207,7 +280,6 @@ def frame_loop():
                     try:
                         obs = langfuse.start_observation(name="vlm-parse-error", as_type="generation", model=MODEL_NAME, input=SAFETY_PROMPT, output=raw, level="ERROR")
                         obs.end()
-                        langfuse.flush()
                     except Exception:
                         pass
                 if score_val != -1:
@@ -216,21 +288,15 @@ def frame_loop():
                             obs = langfuse.start_observation(name="safety-analysis", as_type="generation", model=MODEL_NAME, input=SAFETY_PROMPT, output=raw)
                             obs.end()
                             langfuse.create_score(name="safety-score", value=score_val / 100, trace_id=obs.trace_id)
-                            langfuse.flush()
                         except Exception as e:
                             logger.warning(f"Langfuse report failed: {e}")
                     if memory_client and MEMORY_ID:
                         try:
-                            ts = datetime.now(timezone.utc).isoformat()
+                            event_ts = datetime.now(timezone.utc)
+                            ts = event_ts.isoformat()
                             hazards = ", ".join(d["type"] for d in parsed.get("deductions", []))
                             text = f"[{ts}] Safety score: {score_val}/100. Hazards: {hazards or 'None'}. Summary: {parsed.get('summary', '')}"
-                            memory_client.create_event(
-                                eventTimestamp=datetime.now(timezone.utc),
-                                memoryId=MEMORY_ID,
-                                actorId="safetylens-vlm",
-                                sessionId="cctv-monitoring",
-                                payload=[{"conversational": {"role": "ASSISTANT", "content": {"text": text}}}]
-                            )
+                            memory_queue.put({"event_ts": event_ts, "text": text})
                         except Exception as e:
                             logger.warning(f"AgentCore Memory write failed: {e}")
                 with state_lock:
@@ -241,10 +307,34 @@ def frame_loop():
         time.sleep(1 / 30)
 
 
-async def broadcast_pump():
+def memory_worker():
+    # Drains Memory writes off the analysis critical path. eventTimestamp is captured
+    # at analysis time and passed through, so the recorded time is exact regardless
+    # of when the (slower) AgentCore write actually lands.
     while True:
+        job = memory_queue.get()
         try:
-            msg = broadcast_queue.get_nowait()
+            if memory_client and MEMORY_ID:
+                memory_client.create_event(
+                    eventTimestamp=job["event_ts"],
+                    memoryId=MEMORY_ID,
+                    actorId="safetylens-vlm",
+                    sessionId="cctv-monitoring",
+                    payload=[{"conversational": {"role": "ASSISTANT", "content": {"text": job["text"]}}}],
+                )
+        except Exception as e:
+            logger.warning(f"AgentCore Memory write failed: {e}")
+
+
+async def broadcast_pump():
+    last_seq = -1
+    while True:
+        # Deliver ALL pending events (vlm results, stopped) reliably.
+        while True:
+            try:
+                msg = broadcast_queue.get_nowait()
+            except queue.Empty:
+                break
             if msg.get("type") == "vlm":
                 logger.info(f"Broadcasting VLM result: score={msg.get('analysis', {}).get('score')}")
             dead = []
@@ -255,14 +345,28 @@ async def broadcast_pump():
                     dead.append(ws)
             for ws in dead:
                 ws_clients.remove(ws)
-        except queue.Empty:
-            pass
+        # Send ONLY the latest frame (drop intermediates -> no unbounded backlog).
+        with state_lock:
+            seq = state["frame_seq"]
+            fb = state["current_frame_b64"]
+        if fb is not None and seq != last_seq:
+            last_seq = seq
+            fmsg = {"type": "frame", "b64": fb}
+            dead = []
+            for ws in ws_clients:
+                try:
+                    await ws.send_json(fmsg)
+                except Exception:
+                    dead.append(ws)
+            for ws in dead:
+                ws_clients.remove(ws)
         await asyncio.sleep(0.033)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Thread(target=frame_loop, daemon=True).start()
+    Thread(target=memory_worker, daemon=True).start()
     asyncio.ensure_future(broadcast_pump())
     yield
 
